@@ -15,6 +15,7 @@ pub const Capabilities = struct {
     kitty_keyboard: bool = false,
     kitty_graphics: bool = false,
     rgb: bool = false,
+    ansi256: bool = false,
     unicode: WidthMethod = .unicode,
     sgr_pixels: bool = false,
     color_scheme_updates: bool = false,
@@ -281,6 +282,7 @@ pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard:
     if (builtin.os.tag == .windows) {
         // Windows-specific defaults for ConPTY
         self.caps.rgb = true;
+        self.caps.ansi256 = true;
         self.caps.bracketed_paste = true;
     }
 
@@ -324,15 +326,16 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
     self.caps.bracketed_paste = true;
 
     if (self.caps.rgb) {
+        self.caps.ansi256 = true;
         self.caps.hyperlinks = true;
     }
 
-    if (self.opts.remote) {
-        return;
-    }
-
     var env_map_storage: ?std.process.EnvMap = null;
-    const env_map: *const std.process.EnvMap = self.opts.env_map orelse blk: {
+    const maybe_env_map: ?*const std.process.EnvMap = self.opts.env_map orelse blk: {
+        if (self.opts.remote) {
+            break :blk null;
+        }
+
         env_map_storage = std.process.getEnvMap(std.heap.page_allocator) catch |err| {
             logger.err("Failed to get environment map: {}", .{err});
             return;
@@ -340,6 +343,12 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
         break :blk &env_map_storage.?;
     };
     defer if (env_map_storage) |*map| map.deinit();
+
+    if (maybe_env_map == null) {
+        return;
+    }
+
+    const env_map = maybe_env_map.?;
 
     if (!self.term_info.from_xtversion) {
         if (env_map.get("TMUX")) |_| {
@@ -359,6 +368,12 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
             if (std.mem.indexOf(u8, term, "alacritty") != null) {
                 self.caps.explicit_cursor_positioning = true;
             }
+        }
+    }
+
+    if (env_map.get("TERM")) |term| {
+        if (std.ascii.indexOfIgnoreCase(term, "256color") != null) {
+            self.caps.ansi256 = true;
         }
     }
 
@@ -410,6 +425,7 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
             std.mem.eql(u8, colorterm, "24bit"))
         {
             self.caps.rgb = true;
+            self.caps.ansi256 = true;
         }
     }
 
@@ -684,6 +700,7 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
         self.caps.kitty_graphics = true;
         self.caps.unicode = .unicode;
         self.caps.rgb = true;
+        self.caps.ansi256 = true;
         self.caps.sixel = true;
         self.caps.bracketed_paste = true;
         self.caps.hyperlinks = true;
